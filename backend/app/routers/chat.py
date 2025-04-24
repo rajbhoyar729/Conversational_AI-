@@ -1,152 +1,254 @@
+import asyncio
 import json
 import logging
-from typing import AsyncGenerator
+from typing import Annotated, AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
-from pydantic import ValidationError, TypeAdapter
+from fastapi import (APIRouter, Depends, HTTPException, WebSocket,
+                     WebSocketDisconnect, status, Body)
+from fastapi.responses import StreamingResponse, Response
+from pydantic import ValidationError
 
 from app.config import Settings, get_settings
-from app.models.schemas import ChatRequest, ChatResponse, Message, StreamToken
-from app.services.agent import ConversationalAgent
-from app.services.llm_client import get_llm_client
+from app.models import (ChatRequest, ChatResponse, Message, ServerInfo,
+                        StreamToken)
+from app.services import BaseLLMClient, ConversationalAgent, get_llm_client
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(
+    prefix="/chat",
+    tags=["Chat"],
+)
 
-MessageListAdapter = TypeAdapter(list[Message])
+SettingsDep = Annotated[Settings, Depends(get_settings)]
 
-async def _process_chat_request(request: ChatRequest, agent: ConversationalAgent) -> dict:
-    return await agent.process_message(
-        request.messages,
-        stream=False,
-        temperature=request.temperature,
-        max_tokens=request.max_tokens,
-    )
+LLMClientDep = Annotated[BaseLLMClient, Depends(lambda settings: get_llm_client(settings), use_cache=True)]
 
-async def _generate_stream_response(request: ChatRequest, agent: ConversationalAgent) -> AsyncGenerator[str, None]:
+async def get_conversational_agent(
+    llm_client: LLMClientDep
+) -> ConversationalAgent:
+    return ConversationalAgent(llm_client=llm_client)
+
+AgentDep = Annotated[ConversationalAgent, Depends(get_conversational_agent)]
+
+
+async def _handle_agent_exception(exc: Exception) -> None:
+    status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+    detail = "An internal error occurred while processing your request."
+
+    if isinstance(exc, ValueError):
+        status_code = status.HTTP_400_BAD_REQUEST
+        detail = f"Invalid input: {exc}"
+    elif isinstance(exc, ConnectionError):
+        status_code = status.HTTP_502_BAD_GATEWAY
+        detail = f"Could not connect to the upstream LLM service: {exc}"
+    elif isinstance(exc, NotImplementedError):
+        status_code = status.HTTP_501_NOT_IMPLEMENTED
+        detail = "The requested functionality is not implemented for the configured LLM provider."
+
+    logger.error(f"Raising HTTPException {status_code}: {detail}", exc_info=True)
+    raise HTTPException(status_code=status_code, detail=detail)
+
+
+@router.post(
+    "",
+    response_model=ChatResponse,
+    summary="Process a Non-Streaming Chat Request",
+    description="Sends the conversation history to the LLM and receives a single, complete response.",
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {"description": "Invalid input data"},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Internal server error"},
+        status.HTTP_502_BAD_GATEWAY: {"description": "Error communicating with LLM provider"},
+    },
+)
+async def process_chat_non_streaming(
+    request: ChatRequest,
+    agent: AgentDep,
+) -> ChatResponse:
+    if request.stream:
+        logger.warning("Received request with stream=True on non-streaming endpoint. Processing as non-streaming.")
+        request.stream = False
+
     try:
-        finish_reason = None
-        async for chunk in agent.process_message(
-            request.messages,
-            stream=True,
+        logger.info(f"Processing non-streaming request with {len(request.messages)} messages.")
+        response_data = await agent.process_message(
+            messages=request.messages,
+            stream=False,
             temperature=request.temperature,
             max_tokens=request.max_tokens,
-        ):
-            try:
-                token_data = StreamToken(**chunk)
-                if token_data.is_finished:
-                    finish_reason = token_data.finish_reason
-                yield f"data: {token_data.model_dump_json()}\n\n"
-            except ValidationError:
-                continue
-    except Exception as e:
-        logger.error(f"Error during stream generation: {e}", exc_info=True)
-        error_token = StreamToken(token="", is_finished=True, finish_reason="error")
-        yield f"data: {error_token.model_dump_json()}\n\n"
-
-async def _handle_websocket_session(websocket: WebSocket, agent: ConversationalAgent):
-    while True:
-        try:
-            data = await websocket.receive_json()
-            request = ChatRequest(**data)
-
-            if request.stream:
-                async for chunk in agent.process_message(
-                    request.messages,
-                    stream=True,
-                    temperature=request.temperature,
-                    max_tokens=request.max_tokens,
-                ):
-                    try:
-                        token_data = StreamToken(**chunk)
-                        await websocket.send_json(token_data.model_dump())
-                    except ValidationError:
-                        await websocket.send_json(StreamToken(token="", is_finished=True, finish_reason="error").model_dump())
-                        break
-            else:
-                response_data = await _process_chat_request(request, agent)
-                chat_response = ChatResponse(
-                    message=Message(role="assistant", content=response_data["content"]),
-                    usage=response_data.get("usage"),
-                )
-                await websocket.send_json(chat_response.model_dump())
-
-        except WebSocketDisconnect:
-            logger.info("WebSocket client disconnected.")
-            break
-        except ValidationError as e:
-            logger.warning(f"Invalid WebSocket request received: {e}")
-            await websocket.send_json({
-                "error": "Invalid request format",
-                "details": e.errors()
-            })
-        except json.JSONDecodeError:
-            logger.warning("Invalid JSON received over WebSocket.")
-            await websocket.send_json({"error": "Invalid JSON format"})
-        except Exception as e:
-            logger.error(f"Unhandled error in WebSocket chat: {e}", exc_info=True)
-            await websocket.send_json({"error": "An internal server error occurred."})
-            break
-
-@router.post("", response_model=ChatResponse)
-async def chat_endpoint(
-    request: ChatRequest,
-    settings: Settings = Depends(get_settings),
-):
-    try:
-        llm_client = get_llm_client(settings)
-        agent = ConversationalAgent(llm_client)
-        response_data = await _process_chat_request(request, agent)
-        return ChatResponse(
-            message=Message(role="assistant", content=response_data["content"]),
-            usage=response_data.get("usage"),
         )
-    except Exception as e:
-        logger.error(f"Error processing non-streaming chat request: {e}", exc_info=True)
+
+        validated_response = ChatResponse(**response_data) # type: ignore
+        return validated_response
+
+    except ValidationError as ve:
+        logger.error(f"Validation error processing agent response: {ve}", exc_info=True)
         raise HTTPException(
-            status_code=500,
-            detail="An internal error occurred while processing the chat request."
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal error: Failed to format response.",
         )
+    except Exception as e:
+        await _handle_agent_exception(e)
+        raise
 
-@router.post("/stream")
-async def stream_chat_endpoint(
+
+@router.post(
+    "/stream",
+    summary="Process a Streaming Chat Request (SSE)",
+    description="Sends the conversation history and streams the LLM response back chunk by chunk using Server-Sent Events.",
+    responses={
+        status.HTTP_200_OK: {
+            "content": {"text/event-stream": {}},
+            "description": "Successful streaming response using Server-Sent Events. Each event data payload is a JSON object matching the StreamToken schema.",
+        },
+        status.HTTP_400_BAD_REQUEST: {"description": "Invalid input data"},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Internal server error during streaming"},
+        status.HTTP_502_BAD_GATEWAY: {"description": "Error communicating with LLM provider"},
+    },
+)
+async def process_chat_streaming_sse(
     request: ChatRequest,
-    settings: Settings = Depends(get_settings),
-):
+    agent: AgentDep,
+) -> StreamingResponse:
     if not request.stream:
-        logger.warning("/stream endpoint called with stream=False in request body.")
-    try:
-        llm_client = get_llm_client(settings)
-        agent = ConversationalAgent(llm_client)
-        return StreamingResponse(
-            _generate_stream_response(request, agent),
-            media_type="text/event-stream",
-        )
-    except Exception as e:
-        logger.error(f"Error processing streaming chat request: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="An internal error occurred while processing the streaming chat request."
-        )
+        logger.warning("Received request with stream=False on streaming endpoint. Processing as streaming.")
+        request.stream = True
+
+    async def stream_generator() -> AsyncGenerator[str, None]:
+        try:
+            logger.info(f"Processing streaming SSE request with {len(request.messages)} messages.")
+            response_stream = await agent.process_message(
+                messages=request.messages,
+                stream=True,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+            )
+
+            if not isinstance(response_stream, AsyncGenerator):
+                logger.error("Agent did not return an async generator for streaming request.")
+                error_token = StreamToken(token="Internal Server Error: Invalid stream response.", is_finished=True, finish_reason="error")
+                yield f"data: {error_token.model_dump_json()}\n\n"
+                return
+
+            async for chunk_dict in response_stream:
+                try:
+                    token_data = StreamToken(**chunk_dict)
+                    yield f"data: {token_data.model_dump_json()}\n\n"
+                except ValidationError as ve:
+                    logger.warning(f"Skipping invalid chunk received from agent stream: {ve}. Chunk: {chunk_dict}")
+                    continue
+                except Exception as chunk_exc:
+                    logger.error(f"Error processing/yielding stream chunk: {chunk_exc}", exc_info=True)
+                    error_token = StreamToken(token=f"Error during streaming: {chunk_exc}", is_finished=True, finish_reason="error")
+                    yield f"data: {error_token.model_dump_json()}\n\n"
+                    return
+
+        except Exception as e:
+            logger.error(f"Error initiating or processing SSE stream: {e}", exc_info=True)
+            detail = "An internal error occurred during streaming."
+            if isinstance(e, ConnectionError):
+                detail = f"Could not connect to the upstream LLM service: {e}"
+            elif isinstance(e, ValueError):
+                detail = f"Invalid input: {e}"
+
+            error_token = StreamToken(token=detail, is_finished=True, finish_reason="error")
+            yield f"data: {error_token.model_dump_json()}\n\n"
+
+    return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
 
 @router.websocket("/ws")
-async def websocket_chat_endpoint(
+async def process_chat_websocket(
     websocket: WebSocket,
-    settings: Settings = Depends(get_settings),
+    agent: AgentDep,
 ):
     await websocket.accept()
-    try:
-        llm_client = get_llm_client(settings)
-        agent = ConversationalAgent(llm_client)
-        await _handle_websocket_session(websocket, agent)
-    except Exception as e:
-        logger.error(f"Failed to initialize WebSocket session: {e}", exc_info=True)
-        try:
-            await websocket.close(code=1011, reason="Internal server error during setup")
-        except RuntimeError:
-            pass
-    finally:
-        logger.info("WebSocket connection closing.")
+    logger.info(f"WebSocket connection accepted from: {websocket.client}")
 
+    try:
+        while True:
+            try:
+                raw_data = await websocket.receive_text()
+                data = json.loads(raw_data)
+                request = ChatRequest(**data)
+                logger.debug(f"WebSocket received request: stream={request.stream}, messages={len(request.messages)}")
+
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket client {websocket.client} disconnected.")
+                break
+            except json.JSONDecodeError:
+                logger.warning(f"WebSocket received invalid JSON from {websocket.client}.")
+                await websocket.send_json({"error": "Invalid JSON format received.", "is_finished": True, "finish_reason": "error"})
+                continue
+            except ValidationError as ve:
+                logger.warning(f"WebSocket received invalid ChatRequest data: {ve}")
+                await websocket.send_json({
+                    "error": "Invalid request data.",
+                    "details": ve.errors(),
+                    "is_finished": True,
+                    "finish_reason": "error"
+                })
+                continue
+            except Exception as e:
+                logger.error(f"Error receiving WebSocket message: {e}", exc_info=True)
+                await websocket.send_json({"error": f"Server error receiving message: {e}", "is_finished": True, "finish_reason": "error"})
+                break
+
+            try:
+                response_or_stream = await agent.process_message(
+                    messages=request.messages,
+                    stream=request.stream,
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                )
+
+                if request.stream:
+                    if not isinstance(response_or_stream, AsyncGenerator):
+                        logger.error("Agent did not return async generator for WS stream.")
+                        await websocket.send_json(StreamToken(token="Internal Error: Invalid stream response", is_finished=True, finish_reason="error").model_dump())
+                        continue
+
+                    async for chunk_dict in response_or_stream:
+                        try:
+                            token_data = StreamToken(**chunk_dict)
+                            await websocket.send_json(token_data.model_dump())
+                        except ValidationError as ve:
+                            logger.warning(f"Skipping invalid chunk for WebSocket: {ve}. Chunk: {chunk_dict}")
+                            continue
+                        except Exception as chunk_exc:
+                            logger.error(f"Error processing/sending WS chunk: {chunk_exc}", exc_info=True)
+                            await websocket.send_json(StreamToken(token=f"Error during streaming: {chunk_exc}", is_finished=True, finish_reason="error").model_dump())
+                            raise
+
+                else:
+                    if not isinstance(response_or_stream, dict):
+                        logger.error("Agent did not return dict for non-streaming WS request.")
+                        await websocket.send_json({"error": "Internal Server Error: Invalid response format.", "is_finished": True})
+                        continue
+
+                    try:
+                        validated_response = ChatResponse(**response_or_stream)
+                        await websocket.send_json(validated_response.model_dump())
+                    except ValidationError as ve:
+                        logger.error(f"Failed to validate non-streaming agent response for WS: {ve}")
+                        await websocket.send_json({"error": "Internal Server Error: Failed to format response.", "is_finished": True})
+
+            except Exception as e:
+                logger.error(f"Error processing WebSocket request via agent: {e}", exc_info=True)
+                detail = "An internal error occurred while processing your request."
+                if isinstance(e, ConnectionError): detail = f"Could not connect to the upstream LLM service: {e}"
+                elif isinstance(e, ValueError): detail = f"Invalid input: {e}"
+                await websocket.send_json({"token": detail, "error": detail, "is_finished": True, "finish_reason": "error"})
+                break
+
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket client {websocket.client} disconnected during processing/sending.")
+    except Exception as e:
+        logger.error(f"Unhandled exception in WebSocket handler for {websocket.client}: {e}", exc_info=True)
+        try:
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason=f"Unhandled server error: {type(e).__name__}")
+        except Exception:
+            logger.warning("Failed to send WebSocket close frame, connection might already be closed.")
+    finally:
+        logger.info(f"WebSocket connection closing for {websocket.client}.")

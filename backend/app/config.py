@@ -1,23 +1,43 @@
+"""
+Application Configuration Module for Conversational AI Backend
+
+This module defines the Settings class for managing environment-based configuration,
+provider-specific API keys, and validation rules.
+"""
+
 import logging
 import os
+from pathlib import Path
 from enum import Enum
 from functools import lru_cache
-from typing import Optional, ClassVar, List
-
-from pydantic import Field, SecretStr, ValidationError, HttpUrl, ValidationInfo, field_validator
+from typing import ClassVar, List, Optional
+from pydantic import BaseModel, Field, SecretStr, model_validator, ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
+# Environment variable prefix
 ENV_PREFIX = "APP_"
 ENV_DEBUG = f"{ENV_PREFIX}DEBUG"
 ENV_LLM_PROVIDER = f"{ENV_PREFIX}LLM_PROVIDER"
+
+# Provider-specific environment variables
 ENV_GROQ_API_KEY = f"{ENV_PREFIX}GROQ_API_KEY"
 ENV_GROQ_MODEL = f"{ENV_PREFIX}GROQ_MODEL"
 ENV_GEMINI_API_KEY = f"{ENV_PREFIX}GEMINI_API_KEY"
 ENV_GEMINI_MODEL = f"{ENV_PREFIX}GEMINI_MODEL"
 
+# ======================
+# LLMProvider Enum
+# ======================
+
 class LLMProvider(str, Enum):
+    """
+    Supported LLM providers.
+
+    Extend this class to support additional providers like Anthropic or OpenAI.
+    Ensure corresponding adapters are implemented in `llm_client.py`.
+    """
     GEMINI = "gemini"
     GROQ = "groq"
 
@@ -25,68 +45,74 @@ class LLMProvider(str, Enum):
     def list_values(cls) -> List[str]:
         return [item.value for item in cls]
 
+# ======================
+# Helper Function to Load .env File
+# ======================
+
+def load_env_file(env_path: str) -> dict:
+    env_vars = {}
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    env_vars[key.strip()] = value.strip().strip('"').strip("'")
+    return env_vars
+
+# ======================
+# Settings Model
+# ======================
+
 class Settings(BaseSettings):
-    debug: bool = Field(
-        default=False,
-        validation_alias=ENV_DEBUG
-    )
-    llm_provider: LLMProvider = Field(
-        default=LLMProvider.GEMINI,
-        validation_alias=ENV_LLM_PROVIDER
-    )
-    groq_api_key: Optional[SecretStr] = Field(
-        default=None,
-        validation_alias=ENV_GROQ_API_KEY
-    )
-    groq_model: str = Field(
-        default="llama-3.1-70b-instant",
-        min_length=1,
-        validation_alias=ENV_GROQ_MODEL
-    )
-    gemini_api_key: Optional[SecretStr] = Field(
-        default=None,
-        validation_alias=ENV_GEMINI_API_KEY
-    )
-    gemini_model: str = Field(
-        default="gemini-1.5-pro",
-        min_length=1,
-        validation_alias=ENV_GEMINI_MODEL
-    )
+    """
+    Application settings loaded from environment variables or .env file.
 
-    model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra='ignore',
-    )
+    Fields:
+    - debug: Enables debug mode in FastAPI
+    - llm_provider: Active LLM provider (e.g., 'gemini', 'groq')
+    - groq_api_key: API key for Groq
+    - groq_model: Model name for Groq (e.g., 'llama-3.1-70b-instant')
+    - gemini_api_key: API key for Google Gemini
+    - gemini_model: Model name for Gemini (e.g., 'gemini-1.5-pro')
+    """
+    APP_GEMINI_API_KEY: str = ""
+    APP_GROQ_API_KEY: str = ""
+    llm_provider: str = ""
+    groq_api_key: str = ""
+    groq_model: str = ""
+    gemini_api_key: str = ""
+    gemini_model: str = ""
+    debug: bool = False
 
-    @field_validator('groq_api_key', 'gemini_api_key')
-    @classmethod
-    def check_api_key_present_for_provider(cls, v: Optional[SecretStr], info: ValidationInfo) -> Optional[SecretStr]:
-        if not info.data:
-            return v
+    model_config = ConfigDict(extra="allow")  # Allow extra inputs from the env file
 
-        selected_provider = info.data.get('llm_provider')
-        field_name = info.field_name
-
-        if field_name == 'groq_api_key' and selected_provider == LLMProvider.GROQ and v is None:
-            raise ValueError(f"'{ENV_GROQ_API_KEY}' must be set when LLM provider is '{LLMProvider.GROQ.value}'.")
-
-        if field_name == 'gemini_api_key' and selected_provider == LLMProvider.GEMINI and v is None:
-            raise ValueError(f"'{ENV_GEMINI_API_KEY}' must be set when LLM provider is '{LLMProvider.GEMINI.value}'.")
-
-        return v
+# ======================
+# Get Settings Function
+# ======================
 
 @lru_cache()
 def get_settings() -> Settings:
+    """
+    Loads and caches application settings.
+
+    Returns:
+        Settings: The validated application configuration.
+
+    Raises:
+        ValidationError: If the configuration fails validation.
+        RuntimeError: If an unexpected error occurs during loading.
+    """
     logger.info("Attempting to load application settings...")
     try:
-        settings = Settings()
-        logger.info(f"Settings loaded successfully. Provider: '{settings.llm_provider.value}', Debug: {settings.debug}")
+        base_dir = Path(__file__).parent.parent  # Adjust if .env is at the backend root
+        env_path = os.path.join(base_dir, ".env")
+        env_vars = load_env_file(env_path)
+        settings = Settings(**env_vars)
+        logger.info(f"Settings loaded successfully. Provider: '{settings.llm_provider}', Debug: {settings.debug}")
         return settings
-    except ValidationError as e:
-        logger.critical("FATAL: Settings validation failed. Please check your .env file and environment variables.")
-        logger.critical(f"Validation Errors:\n{e}")
-        raise
     except Exception as e:
-        logger.critical(f"FATAL: An unexpected error occurred while loading settings: {e}", exc_info=True)
+        logger.critical(f"Application settings failed to load: {e}", exc_info=True)
         raise

@@ -10,6 +10,9 @@ A flexible conversational AI application featuring a FastAPI backend and a Gradi
 - [Prerequisites](#prerequisites)  
 - [Configuration](#configuration)  
 - [Installation](#installation)  
+- [Setup Instructions](#setup-instructions)  
+  - [Backend Setup](#backend-setup)  
+  - [Frontend Setup](#frontend-setup)  
 - [Running the Application](#running-the-application)  
   - [Locally](#locally)  
   - [Using Docker Compose](#using-docker-compose)  
@@ -69,6 +72,7 @@ conversational-ai-app/
 - pip  
 - Docker & Docker Compose (for containerized deployment)  
 - API Keys for your chosen LLM providers  
+- Microsoft Visual Studio Build Tools (ensure vswhere.exe is installed)  
 
 ## Configuration
 1. Copy the example:
@@ -108,6 +112,40 @@ cd frontend
 pip install -r requirements.txt
 cd ..
 ```
+
+## Setup Instructions
+
+### Backend Setup
+1. Navigate to the `backend` directory:
+   ```bash
+   cd backend
+   ```
+2. Create a virtual environment and activate it:
+   ```bash
+   python -m venv venv
+   venv\Scripts\activate
+   ```
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Create a `.env` file in `backend/app/` with the following content:
+   ```env
+   ACTIVE_LLM=gpt-4
+   OPENAI_API_KEY=your_openai_api_key
+   GEMINI_API_KEY=your_gemini_api_key
+   ANTHROPIC_API_KEY=your_anthropic_api_key
+   ```
+
+### Frontend Setup
+1. Navigate to the `frontend` directory:
+   ```bash
+   cd frontend
+   ```
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 ## Running the Application
 
@@ -151,6 +189,14 @@ services:
 docker-compose up --build
 ```
 Access UI at `localhost:7860`, API at `localhost:8000`.
+
+### Switching LLMs
+To switch the active LLM, update the `ACTIVE_LLM` variable in the `.env` file to one of the following:
+- `gpt-4`
+- `gemini`
+- `claude`
+
+Restart the backend server after making changes.
 
 ## Usage
 - **Gradio UI**: Browse to `localhost:7860`.  

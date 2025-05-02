@@ -1,0 +1,149 @@
+/* Custom CSS for the Dash UI */
+
+/* Gradient backgrounds */
+.gradient-primary {
+  background: linear-gradient(135deg, #6e8efb, #a777e3);
+  color: white;
+}
+
+.gradient-secondary {
+  background: linear-gradient(135deg, #4facfe, #00f2fe);
+  color: white;
+}
+
+.gradient-dark {
+  background: linear-gradient(135deg, #2b5876, #4e4376);
+  color: white;
+}
+
+.gradient-light {
+  background: linear-gradient(135deg, #f5f7fa, #c3cfe2);
+}
+
+/* Chat message styles */
+.message-user {
+  background: linear-gradient(135deg, #5691c8, #457fca);
+  color: white;
+  border-radius: 18px 18px 0 18px;
+  padding: 12px 16px;
+  margin: 8px 0;
+  max-width: 80%;
+  align-self: flex-end;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.message-assistant {
+  background: linear-gradient(135deg, #f5f7fa, #e4e8f0);
+  color: #333;
+  border-radius: 18px 18px 18px 0;
+  padding: 12px 16px;
+  margin: 8px 0;
+  max-width: 80%;
+  align-self: flex-start;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+/* Card styles */
+.card-gradient {
+  border: none;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
+}
+
+.card-gradient:hover {
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+  transform: translateY(-2px);
+}
+
+.card-header-gradient {
+  border-radius: 12px 12px 0 0 !important;
+  border-bottom: none;
+  padding: 16px 20px;
+}
+
+/* Button styles */
+.btn-gradient {
+  background: linear-gradient(135deg, #6e8efb, #a777e3);
+  border: none;
+  color: white;
+  border-radius: 8px;
+  padding: 10px 20px;
+  transition: all 0.3s ease;
+}
+
+.btn-gradient:hover {
+  background: linear-gradient(135deg, #a777e3, #6e8efb);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
+}
+
+.btn-gradient:active {
+  transform: translateY(0);
+}
+
+/* Input styles */
+.input-custom {
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  padding: 12px 16px;
+  transition: all 0.3s ease;
+}
+
+.input-custom:focus {
+  border-color: #6e8efb;
+  box-shadow: 0 0 0 3px rgba(110, 142, 251, 0.2);
+}
+
+/* Status indicators */
+.status-connected {
+  color: #10b981;
+  font-weight: 600;
+}
+
+.status-disconnected {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease-out forwards;
+}
+
+/* Main container */
+.main-container {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #f5f7fa, #e4e8f0);
+  padding: 20px;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(135deg, #6e8efb, #a777e3);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(135deg, #a777e3, #6e8efb);
+}
